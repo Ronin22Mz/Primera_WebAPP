@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Elegante</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- EMOJI PICKER CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/emoji-picker-element@^1.14.0/dist/style.css">
+    <!-- FONT AWESOME PARA ÍCONOS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="chat-card">
+        <!-- HEADER CON INFO DE USUARIO -->
+        <div class="chat-header">
+            <div class="header-content">
+                <h1>
+                    <span class="online-indicator"></span>
+                    💬 Chat Elegante
+                    {% if role == 'admin' %}
+                    <span class="admin-badge">ADMIN</span>
+                    {% endif %}
+                </h1>
+                <div class="user-info">
+                    <span class="username">👤 {{ username }}</span>
+                    <a href="{{ url_for('logout') }}" class="logout-btn">
+                        <i class="fas fa-sign-out-alt"></i> Salir
+                    </a>
+                    {% if role == 'admin' %}
+                    <a href="{{ url_for('admin_panel') }}" class="admin-btn">
+                        <i class="fas fa-cog"></i> Admin
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- ÁREA DE MENSAJES -->
+        <div class="messages-area" id="messages-area">
+            <ul class="messages-list" id="messages-list">
+                {% for mensaje in mensajes %}
+                <li class="message-item 
+                           {% if mensaje.username == username %}own-message{% else %}other-message{% endif %}
+                           {% if mensaje.role == 'admin' %}admin-message{% endif %}"
+                    data-id="{{ mensaje.id }}"
+                    data-sender="{{ mensaje.nombre or mensaje.username }}"
+                    data-user-id="{{ mensaje.usuario_id or '' }}">
+                    
+                    <div class="message-header">
+                        <span class="sender-name">
+                            {% if mensaje.role == 'admin' %}
+                            👑 {{ mensaje.nombre or mensaje.username }}
+                            {% else %}
+                            👤 {{ mensaje.nombre or mensaje.username }}
+                            {% endif %}
+                        </span>
+                        <span class="message-time">{{ mensaje.timestamp }}</span>
+                        
+                        {% if role == 'admin' or mensaje.usuario_id == user_id %}
+                        <button class="delete-btn" onclick="deleteMessage({{ mensaje.id }})">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                        {% endif %}
+                    </div>
+                    
+                    <div class="message-content">
+                        {% if mensaje.tipo == 'image' %}
+                            <img src="{{ mensaje.archivo_url or mensaje.contenido }}" 
+                                 class="message-image"
+                                 alt="Imagen">
+                        {% elif mensaje.tipo == 'file' %}
+                            <div class="file-message">
+                                <i class="fas fa-file"></i>
+                                <a href="{{ mensaje.archivo_url or mensaje.contenido }}" 
+                                   target="_blank"
+                                   class="file-link">
+                                    Descargar archivo
+                                </a>
+                            </div>
+                        {% else %}
+                            <span class="message-text">{{ mensaje.contenido }}</span>
+                        {% endif %}
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <!-- FORMULARIO DE CHAT MEJORADO -->
+        <div class="chat-form-container">
+            <form id="chat-form">
+                <div class="form-top-row">
+                    <div class="emoji-btn" id="emoji-btn">
+                        <i class="fas fa-smile"></i>
+                    </div>
+                    
+                    <input type="text" 
+                           id="message-input"
+                           class="message-input"
+                           placeholder="Escribe un mensaje... 😊"
+                           autocomplete="off">
+                    
+                    <div class="file-upload-btn" id="file-upload-btn" title="Subir archivo (Ctrl+U)">
+                        <i class="fas fa-paperclip"></i>
+                    </div>
+                    
+                    <button type="submit" class="send-btn" id="send-btn">
+                        <i class="fas fa-paper-plane"></i> Enviar
+                    </button>
+                </div>
+                
+                <div class="form-bottom-row">
+                    <div class="file-info" id="file-info"></div>
+                    <div class="typing-indicator" id="typing-indicator"></div>
+                </div>
+            </form>
+            
+            <!-- INPUT OCULTO PARA ARCHIVOS -->
+            <input type="file" id="file-input" style="display: none;" multiple>
+            
+            <!-- EMOJI PICKER -->
+            <emoji-picker id="emoji-picker"></emoji-picker>
+        </div>
+    </div>
+
+    <!-- SOCKET.IO -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <!-- EMOJI PICKER JS -->
+    <script type="module" src="https://cdn.jsdelivr.net/npm/emoji-picker-element@^1.14.0/dist/index.min.js"></script>
+    
+    <script>
+        // Conexión Socket.IO
+        const socket = io();
+        
+        // Elementos del DOM
+        const messagesList = document.getElementById('messages-list');
+        const messageInput = document.getElementById('message-input');
+        const fileInput = document.getElementById('file-input');
+        const fileUploadBtn = document.getElementById('file-upload-btn');
+        const emojiBtn = document.getElementById('emoji-btn');
+        const emojiPicker = document.getElementById('emoji-picker');
+        const chatForm = document.getElementById('chat-form');
+        const fileInfo = document.getElementById('file-info');
+        const messagesArea = document.getElementById('messages-area');
+        
+        let selectedFiles = [];
+        let isTyping = false;
+        let typingTimeout;
+
+        // EMOJI PICKER
+        emojiPicker.style.display = 'none';
+        emojiPicker.style.position = 'absolute';
+        emojiPicker.style.bottom = '70px';
+        emojiPicker.style.right = '20px';
+        emojiPicker.style.zIndex = '1000';
+        
+        emojiBtn.addEventListener('click', () => {
+            emojiPicker.style.display = emojiPicker.style.display === 'none' ? 'block' : 'none';
+        });
+        
+        emojiPicker.addEventListener('emoji-click', event => {
+            const emoji = event.detail.unicode;
+            messageInput.value += emoji;
+            messageInput.focus();
+            emojiPicker.style.display = 'none';
+        });
+
+        // SUBIR ARCHIVOS
+        fileUploadBtn.addEventListener('click', () => fileInput.click());
+        
+        fileInput.addEventListener('change', async () => {
+            selectedFiles = Array.from(fileInput.files);
+            if (selectedFiles.length > 0) {
+                const fileNames = selectedFiles.map(f => f.name).join(', ');
+                fileInfo.innerHTML = `
+                    <i class="fas fa-file"></i>
+                    <span>${selectedFiles.length} archivo(s) seleccionado: ${fileNames}</span>
+                    <button type="button" onclick="clearFiles()" class="clear-files-btn">
+                        <i class="fas fa-times"></i>
+                    </button>
+                `;
+                fileInfo.style.display = 'block';
+            }
+        });
+
+        // ENVIAR MENSAJE
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const message = messageInput.value.trim();
+            
+            // Si hay archivos, subirlos primero
+            if (selectedFiles.length > 0) {
+                for (const file of selectedFiles) {
+                    await uploadFile(file);
+                }
+                clearFiles();
+            } 
+            // Si hay texto, enviar mensaje de texto
+            else if (message) {
+                sendTextMessage(message);
+                messageInput.value = '';
+            }
+            
+            messageInput.focus();
+        });
+
+        // FUNCIÓN PARA SUBIR ARCHIVO
+        async function uploadFile(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    socket.emit('send_message', {
+                        content: file.name,
+                        type: file.type.startsWith('image') ? 'image' : 'file',
+                        file_url: result.url
+                    });
+                } else {
+                    alert('Error al subir el archivo: ' + (result.error || 'Error desconocido'));
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Error al subir el archivo');
+            }
+        }
+
+        // FUNCIÓN PARA ENVIAR TEXTO
+        function sendTextMessage(text) {
+            socket.emit('send_message', {
+                content: text,
+                type: 'text'
+            });
+        }
+
+        // RECIBIR NUEVOS MENSAJES
+        socket.on('new_message', function(data) {
+            const li = document.createElement('li');
+            li.className = `message-item ${data.username === '{{ username }}' ? 'own-message' : 'other-message'} ${data.role === 'admin' ? 'admin-message' : ''}`;
+            li.setAttribute('data-id', data.id);
+            li.setAttribute('data-sender', data.username);
+            li.setAttribute('data-user-id', data.user_id);
+            
+            let contentHtml = '';
+            if (data.type === 'image') {
+                contentHtml = `<img src="${data.file_url || data.content}" class="message-image" alt="Imagen">`;
+            } else if (data.type === 'file') {
+                contentHtml = `
+                    <div class="file-message">
+                        <i class="fas fa-file"></i>
+                        <a href="${data.file_url || data.content}" target="_blank" class="file-link">
+                            Descargar archivo
+                        </a>
+                    </div>`;
+            } else {
+                contentHtml = `<span class="message-text">${data.content}</span>`;
+            }
+            
+            li.innerHTML = `
+                <div class="message-header">
+                    <span class="sender-name">
+                        ${data.role === 'admin' ? '👑' : '👤'} ${data.username}
+                    </span>
+                    <span class="message-time">${data.timestamp}</span>
+                    ${'{{ role }}' === 'admin' || data.user_id === {{ user_id }} ? 
+                        `<button class="delete-btn" onclick="deleteMessage(${data.id})">
+                            <i class="fas fa-trash"></i>
+                        </button>` : ''}
+                </div>
+                <div class="message-content">
+                    ${contentHtml}
+                </div>
+            `;
+            
+            messagesList.appendChild(li);
+            scrollToBottom();
+            
+            // Animación de nuevo mensaje
+            li.style.animation = 'popIn 0.3s ease-out';
+        });
+
+        // ELIMINAR MENSAJE
+        window.deleteMessage = function(messageId) {
+            if (confirm('¿Seguro que quieres eliminar este mensaje?')) {
+                socket.emit('delete_message', { message_id: messageId });
+            }
+        };
+
+        // ACTUALIZAR CUANDO SE ELIMINA UN MENSAJE
+        socket.on('message_deleted', function(data) {
+            const messageElement = document.querySelector(`li[data-id="${data.message_id}"]`);
+            if (messageElement) {
+                messageElement.style.animation = 'fadeOut 0.3s ease-out';
+                setTimeout(() => messageElement.remove(), 300);
+            }
+        });
+
+        // ESTADO DE USUARIOS
+        socket.on('user_status', function(data) {
+            showNotification(data.message);
+        });
+
+        // TYPING INDICATOR
+        messageInput.addEventListener('input', () => {
+            if (!isTyping) {
+                isTyping = true;
+                socket.emit('typing', { username: '{{ username }}' });
+            }
+            
+            clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => {
+                isTyping = false;
+                socket.emit('stop_typing', { username: '{{ username }}' });
+            }, 1000);
+        });
+
+        socket.on('user_typing', function(data) {
+            const typingIndicator = document.getElementById('typing-indicator');
+            if (data.username !== '{{ username }}') {
+                typingIndicator.textContent = `${data.username} está escribiendo...`;
+                typingIndicator.style.display = 'block';
+            }
+        });
+
+        socket.on('user_stop_typing', function(data) {
+            const typingIndicator = document.getElementById('typing-indicator');
+            typingIndicator.style.display = 'none';
+        });
+
+        // FUNCIONES AUXILIARES
+        window.clearFiles = function() {
+            selectedFiles = [];
+            fileInput.value = '';
+            fileInfo.style.display = 'none';
+        };
+
+        function scrollToBottom() {
+            messagesArea.scrollTop = messagesArea.scrollHeight;
+        }
+
+        function showNotification(message) {
+            // Implementar notificaciones si se desea
+            console.log('Notificación:', message);
+        }

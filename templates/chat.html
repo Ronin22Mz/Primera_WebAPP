@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Elegante - {{ username }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+</head>
+<body>
+    <div class="chat-container">
+        <!-- Sidebar de contactos -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2><i class="fas fa-comments"></i> Chat Elegante</h2>
+                <div class="user-info">
+                    <span class="user-role {{ 'admin' if role == 'admin' else 'user' }}">
+                        <i class="fas fa-{{ 'crown' if role == 'admin' else 'user' }}"></i>
+                        {{ username }}
+                    </span>
+                    {% if role == 'admin' %}
+                    <a href="{{ url_for('admin') }}" class="admin-btn">
+                        <i class="fas fa-tools"></i> Admin
+                    </a>
+                    {% endif %}
+                    <a href="{{ url_for('logout') }}" class="logout-btn">
+                        <i class="fas fa-sign-out-alt"></i> Salir
+                    </a>
+                </div>
+            </div>
+            
+            <div class="search-box">
+                <input type="text" id="searchContact" placeholder="Buscar contacto...">
+                <i class="fas fa-search"></i>
+            </div>
+            
+            <div class="contacts-list">
+                <div class="contacts-header">
+                    <h3><i class="fas fa-users"></i> Contactos</h3>
+                    <span class="unread-badge" id="totalUnread">{{ total_unread }}</span>
+                </div>
+                
+                <div id="contactsContainer">
+                    {% for user in users %}
+                    <div class="contact-item" data-username="{{ user.username }}">
+                        <div class="contact-avatar {{ 'admin' if user.role == 'admin' else 'user' }}">
+                            <i class="fas fa-{{ 'crown' if user.role == 'admin' else 'user' }}"></i>
+                        </div>
+                        <div class="contact-info">
+                            <div class="contact-name">
+                                {{ user.username }}
+                                {% if user.role == 'admin' %}
+                                <span class="role-badge">Admin</span>
+                                {% endif %}
+                            </div>
+                            <div class="contact-status" id="status-{{ user.username }}">
+                                <i class="fas fa-circle offline"></i> Offline
+                            </div>
+                        </div>
+                        <div class="contact-unread" id="unread-{{ user.username }}">
+                            {{ unread_counts.get(user.username, 0) }}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        
+        <!-- Área principal del chat -->
+        <div class="main-chat">
+            <div class="chat-header" id="chatHeader">
+                <div class="no-chat-selected">
+                    <i class="fas fa-comment-slash"></i>
+                    <h3>Selecciona un contacto para comenzar a chatear</h3>
+                </div>
+                <div class="active-chat-info" style="display: none;">
+                    <div class="active-contact-avatar" id="activeAvatar">
+                        <i class="fas fa-user"></i>
+                    </div>
+                    <div class="active-contact-details">
+                        <h3 id="activeContactName">Nombre del Contacto</h3>
+                        <p id="activeContactStatus"><i class="fas fa-circle offline"></i> Offline</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="messages-container" id="messagesContainer">
+                <div class="no-chat-message">
+                    <i class="fas fa-comments"></i>
+                    <p>Los mensajes aparecerán aquí</p>
+                </div>
+            </div>
+            
+            <div class="message-input-container" style="display: none;">
+                <div class="input-wrapper">
+                    <input type="text" id="messageInput" placeholder="Escribe un mensaje...">
+                    <button id="sendButton">
+                        <i class="fas fa-paper-plane"></i> Enviar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let currentContact = null;
+        let socket = io();
+        let isTabVisible = true;
+        let typingTimeout;
+        
+        // Configurar detección de visibilidad de pestaña
+        document.addEventListener('visibilitychange', function() {
+            isTabVisible = !document.hidden;
+            if (isTabVisible) {
+                updateTabTitle();
+            }
+        });
+        
+        // Actualizar título de la pestaña con contador
+        function updateTabTitle() {
+            const totalUnread = parseInt(document.getElementById('totalUnread').textContent) || 0;
+            
+            if (totalUnread > 0 && !isTabVisible) {
+                document.title = `(${totalUnread}) Chat Elegante - {{ username }}`;
+            } else if (totalUnread > 0) {
+                document.title = `(${totalUnread}) Chat Elegante - {{ username }}`;
+            } else {
+                document.title = `Chat Elegante - {{ username }}`;
+            }
+        }
+        
+        // Conectar al socket
+        socket.on('connect', function() {
+            console.log('Conectado al servidor de sockets');
+            socket.emit('user_online', { username: '{{ username }}' });
+        });
+        
+        // Escuchar actualizaciones de estado
+        socket.on('user_status', function(data) {
+            updateUserStatus(data.username, data.status);
+        });
+        
+        // Función para actualizar estado de usuario
+        function updateUserStatus(username, status) {
+            const statusElement = document.getElementById(`status-${username}`);
+            if (statusElement) {
+                const icon = statusElement.querySelector('i');
+                icon.className = status === 'online' ? 'fas fa-circle online' : 'fas fa-circle offline';
+                statusElement.innerHTML = `${icon.outerHTML} ${status === 'online' ? 'Online' : 'Offline'}`;
+                
+                if (currentContact === username) {
+                    const activeStatus = document.getElementById('activeContactStatus');
+                    if (activeStatus) {
+                        activeStatus.innerHTML = `${icon.outerHTML} ${status === 'online' ? 'Online' : 'Offline'}`;
+                    }
+                }
+            }
+        }
+        
+        // Escuchar nuevos mensajes
+        socket.on('new_message', function(data) {
+            console.log('Nuevo mensaje recibido:', data);
+            
+            if (data.sender === currentContact && isTabVisible) {
+                // Si el mensaje es del contacto activo y estamos en la pestaña
+                addMessageToChat(data.sender, data.message, false);
+                markMessageAsRead(data.sender);
+            } else {
+                // Si no, actualizar contador de no leídos
+                updateUnreadCount(data.sender);
+                
+                // Solo cambiar el título si no estamos en la pestaña activa
+                if (!isTabVisible) {
+                    updateTabTitle();
+                }
+            }
+        });
+        
+        // Seleccionar contacto
+        document.querySelectorAll('.contact-item').forEach(item => {
+            item.addEventListener('click', function() {
+                const username = this.getAttribute('data-username');
+                selectContact(username);
+            });
+        });
+        
+        function selectContact(username) {
+            currentContact = username;
+            
+            // Actualizar UI
+            document.querySelectorAll('.contact-item').forEach(item => {
+                item.classList.remove('active');
+                if (item.getAttribute('data-username') === username) {
+                    item.classList.add('active');
+                }
+            });
+            
+            // Mostrar información del contacto activo
+            document.querySelector('.no-chat-selected').style.display = 'none';
+            document.querySelector('.active-chat-info').style.display = 'flex';
+            document.querySelector('.message-input-container').style.display = 'block';
+            
+            // Actualizar nombre del contacto
+            document.getElementById('activeContactName').textContent = username;
+            
+            // Actualizar avatar
+            const contactItem = document.querySelector(`[data-username="${username}"]`);
+            const avatarClass = contactItem.querySelector('.contact-avatar').className;
+            document.getElementById('activeAvatar').className = `active-contact-avatar ${avatarClass}`;
+            
+            // Actualizar estado
+            const statusElement = document.getElementById(`status-${username}`);
+            document.getElementById('activeContactStatus').innerHTML = statusElement.innerHTML;
+            
+            // Cargar mensajes
+            loadMessages(username);
+            
+            // Resetear contador de no leídos para este contacto
+            document.getElementById(`unread-${username}`).textContent = '0';
+            updateTotalUnread();
+            
+            // Marcar mensajes como leídos en la base de datos
+            fetch(`/mark_as_read/${username}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }).catch(error => console.error('Error marcando como leído:', error));
+            
+            // Enfocar input de mensaje
+            document.getElementById('messageInput').focus();
+        }
+        
+        function loadMessages(contact) {
+            fetch(`/get_messages/${contact}`)
+                .then(response => response.json())
+                .then(messages => {
+                    const container = document.getElementById('messagesContainer');
+                    
+                    if (messages.error) {
+                        container.innerHTML = `<div class="error">${messages.error}</div>`;
+                        return;
+                    }
+                    
+                    if (messages.length === 0) {
+                        container.innerHTML = `
+                            <div class="no-chat-message">
+                                <i class="fas fa-comment"></i>
+                                <p>No hay mensajes con ${contact}. ¡Envía el primero!</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    
+                    container.innerHTML = '';
+                    
+                    messages.forEach(msg => {
+                        addMessageToChat(msg.sender, msg.message, msg.is_me);
+                    });
+                    
+                    // Scroll al final
+                    container.scrollTop = container.scrollHeight;
+                })
+                .catch(error => {
+                    console.error('Error cargando mensajes:', error);
+                });
+        }
+        
+        function addMessageToChat(sender, message, isMe) {
+            const container = document.getElementById('messagesContainer');
+            
+            if (container.querySelector('.no-chat-message')) {
+                container.innerHTML = '';
+            }
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isMe ? 'sent' : 'received'}`;
+            
+            messageDiv.innerHTML = `
+                <div class="message-content">
+                    <div class="message-sender">${isMe ? 'Tú' : sender}</div>
+                    <div class="message-text">${message}</div>
+                    <div class="message-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                </div>
+            `;
+            
+            container.appendChild(messageDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        // Enviar mensaje
+        document.getElementById('sendButton').addEventListener('click', sendMessage);
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        
+        // Indicador de typing
+        document.getElementById('messageInput').addEventListener('input', function() {
+            if (currentContact) {
+                clearTimeout(typingTimeout);
+                socket.emit('typing', {
+                    receiver: currentContact,
+                    is_typing: true
+                });
+                
+                typingTimeout = setTimeout(() => {
+                    socket.emit('typing', {
+                        receiver: currentContact,
+                        is_typing: false
+                    });
+                }, 1000);
+            }
+        });
+        
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message || !currentContact) {
+                return;
+            }
+            
+            addMessageToChat('Tú', message, true);
+            
+            fetch('/send_message', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    receiver: currentContact,
+                    message: message
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    console.error('Error enviando mensaje:', data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error enviando mensaje:', error);
+            });
+            
+            input.value = '';
+            input.focus();
+        }
+        
+        function updateUnreadCount(sender) {
+            const unreadElement = document.getElementById(`unread-${sender}`);
+            if (unreadElement) {
+                let current = parseInt(unreadElement.textContent) || 0;
+                unreadElement.textContent = current + 1;
+                updateTotalUnread();
+                updateTabTitle(); // Actualizar título también
+            }
+        }
+        
+        function markMessageAsRead(sender) {
+            const unreadElement = document.getElementById(`unread-${sender}`);
+            if (unreadElement) {
+                unreadElement.textContent = '0';
+                updateTotalUnread();
+                updateTabTitle(); // Actualizar título también
+            }
+        }
+        
+        function updateTotalUnread() {
+            let total = 0;
+            document.querySelectorAll('.contact-unread').forEach(element => {
+                total += parseInt(element.textContent) || 0;
+            });
+            
+            const badge = document.getElementById('totalUnread');
+            badge.textContent = total;
+            badge.style.display = total > 0 ? 'block' : 'none';
+        }
+        
+        // Buscar contactos
+        document.getElementById('searchContact').addEventListener('input', function() {
+            const searchTerm = this.value.toLowerCase();
+            
+            document.querySelectorAll('.contact-item').forEach(item => {
+                const username = item.getAttribute('data-username').toLowerCase();
+                if (username.includes(searchTerm)) {
+                    item.style.display = 'flex';
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+        });
+        
+        // Actualizar contador de no leídos periódicamente
+        setInterval(() => {
+            fetch('/get_unread_count')
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.error) {
+                        // Actualizar contadores individuales
+                        for (const [sender, count] of Object.entries(data.by_user)) {
+                            const element = document.getElementById(`unread-${sender}`);
+                            if (element) {
+                                element.textContent = count;
+                            }
+                        }
+                        // Actualizar total
+                        document.getElementById('totalUnread').textContent = data.total;
+                        updateTabTitle();
+                    }
+                });
+        }, 30000);
+        
+        // Verificar conexión periódicamente
+        setInterval(() => {
+            if (!socket.connected) {
+                console.log("Intentando reconectar...");
+            }
+        }, 60000);
+        
+        // Cargar estados iniciales de usuarios
+        window.addEventListener('load', function() {
+            // Todos empiezan como offline
+            document.querySelectorAll('.contact-status').forEach(el => {
+                el.innerHTML = '<i class="fas fa-circle offline"></i> Offline';
+            });
+            
+            // Actualizar título inicial
+            updateTabTitle();
+        });
+    </script>
+</body>
+</html>
